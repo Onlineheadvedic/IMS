@@ -3,10 +3,25 @@ import streamlit as st
 from rapidfuzz import fuzz, process
 from datetime import timedelta
 import matplotlib.pyplot as plt
+import os
 
+# 🔹 Cloudinary
+import cloudinary
+import cloudinary.api
+import cloudinary.uploader
 
+# ================================
+# CONFIG
+# ================================
 st.set_page_config(page_title="Inventory Dashboard", layout="wide")
 
+# ✅ Setup Cloudinary config (Replace with your credentials)
+cloudinary.config(
+    cloud_name = "dc5dywe6s",
+    api_key = "659391858798484",
+    api_secret = "aOHsSN8tXHI7JuHzBLqZ7DS3Zx4",
+    secure=True
+)
 
 # Required Columns
 REQ_SHOPIFY = ["Barcode", "Design No", "Closing Qty", "CDN link"]
@@ -71,36 +86,16 @@ ebo_total = ebo_df["Closing Qty"].sum() if ebo_df is not None else 0
 shop_total = shopify_df["Closing Qty"].sum() if shopify_df is not None else 0
 overall_total = wh_total + ebo_total + shop_total
 
-
 col1, col2, col3, col4, col5, col6 = st.columns(6)
 col1.metric("Warehouse Qty", wh_total)
 col2.metric("EBO Qty", ebo_total)
 col3.metric("Shopify Qty", shop_total)
 col4.metric("Overall Qty", overall_total)
 
-
-# Reorder / Not Selling
-reorder_designs, notselling_designs = [], []
-if orders_df is not None:
-    max_date = orders_df["Created at"].max()
-    if pd.notnull(max_date):
-        cutoff = max_date - timedelta(days=3)  # 🔹 last 3 days
-        recent = orders_df[orders_df["Created at"] >= cutoff]
-        sales = recent.groupby("Design No")["Quantity"].sum().reset_index()
-        for _, row in sales.iterrows():
-            if row["Quantity"] > 10:
-                reorder_designs.append(row["Design No"])
-            elif row["Quantity"] < 10:
-                notselling_designs.append(row["Design No"])
-
-
-col5.metric("Reorder Designs (sales > 10, last 3d)", len(reorder_designs))
-col6.metric("Not Selling (sales < 10, last 3d)", len(notselling_designs))
-
-
-# Tabs
+# -----------------------------
+# (Existing tabs unchanged…)
+# -----------------------------
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Inventory Overview", "🔍 Search", "📈 Sales Trends", "📂 Listed vs Non-Listed"])
-
 
 # Inventory Overview
 with tab1:
@@ -295,43 +290,39 @@ with tab4:
             st.success("No products pending photoshoot.")
         import os
 
-# 🔹 Configure your Google Drive folder path
-image_folder = "/content/drive/MyDrive/ECOM"
-
 tab5 = st.tabs(["📷 Image Availability"])[0]
 
 with tab5:
-    st.header("📷 Check Image Availability from Google Drive")
+    st.header("📷 Check Image Availability from Cloudinary")
 
     if warehouse_df is None:
         st.warning("Please upload the Warehouse file first.")
     else:
-        if not os.path.exists(image_folder):
-            st.error(f"Image folder not found: {image_folder}")
-        else:
-            # List all files in the folder
-            drive_files = os.listdir(image_folder)
+        try:
+            # 🔹 Fetch first 500 resources from Cloudinary (adjust max_results if needed)
+            cloudinary_files = cloudinary.api.resources(type="upload", max_results=500)["resources"]
+            file_map = {res["public_id"].lower(): res["secure_url"] for res in cloudinary_files}
 
             availability = []
             for _, row in warehouse_df.iterrows():
-                design_no = str(row.get("Design No", "")).strip()
+                design_no = str(row.get("Design No", "")).strip().lower()
                 closing_qty = row.get("Closing Qty", 0)
 
-                # Check if any file matches Design No
                 matched_file = None
-                for f in drive_files:
-                    if design_no.lower() in f.lower():  # Case-insensitive match
-                        matched_file = f
+                matched_url = None
+                for pid, url in file_map.items():
+                    if design_no in pid:  # partial match in Cloudinary public_id
+                        matched_file = pid
+                        matched_url = url
                         break
 
                 if matched_file:
-                    file_path = os.path.join(image_folder, matched_file)
                     availability.append({
                         "Design No": design_no,
                         "Closing Qty": closing_qty,
                         "Image Status": "✅ Available",
-                        "Image File": f,
-                        "File Path": file_path
+                        "Image File": matched_file,
+                        "Image URL": matched_url
                     })
                 else:
                     availability.append({
@@ -339,17 +330,28 @@ with tab5:
                         "Closing Qty": closing_qty,
                         "Image Status": "❌ Not Available",
                         "Image File": "",
-                        "File Path": ""
+                        "Image URL": ""
                     })
 
-            # Convert to DataFrame
             availability_df = pd.DataFrame(availability)
 
             st.write("### Image Availability Status")
             st.dataframe(availability_df)
 
-            # ✅ Option: Show only missing images
+            # ✅ Show thumbnails for available images
+            available = availability_df[availability_df["Image Status"] == "✅ Available"]
+            if not available.empty:
+                st.write("### Preview Available Images")
+                for _, row in available.head(20).iterrows():
+                    st.image(row["Image URL"], caption=f"Design {row['Design No']} (Qty: {row['Closing Qty']})", width=150)
+
+            # ✅ Show only missing
             missing = availability_df[availability_df["Image Status"] == "❌ Not Available"]
             if not missing.empty:
                 st.warning("Missing images for these designs:")
                 st.table(missing[["Design No", "Closing Qty"]])
+            else:
+                st.success("🎉 All warehouse designs have images on Cloudinary!")
+
+        except Exception as e:
+            st.error(f"Cloudinary API error: {e}")
