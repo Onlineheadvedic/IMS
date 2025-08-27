@@ -17,9 +17,9 @@ st.set_page_config(page_title="Inventory Dashboard", layout="wide")
 
 # ✅ Setup Cloudinary config (Replace with your credentials)
 cloudinary.config(
-    cloud_name = "dc5dywe6s",
-    api_key = "659391858798484",
-    api_secret = "aOHsSN8tXHI7JuHzBLqZ7DS3Zx4",
+    cloud_name=st.secrets["cloudinary"]["cloud_name"],
+    api_key=st.secrets["cloudinary"]["api_key"],
+    api_secret=st.secrets["cloudinary"]["api_secret"],
     secure=True
 )
 
