@@ -26,7 +26,7 @@ if view == "Admin":
 
     # Check password (from secrets)
     password = st.text_input("Enter admin password:", type="password")
-    if password == st.secrets["admin_password"]:
+    if password == st.secrets["password"]:
         st.success("Access granted ✅")
         uploaded_file = st.file_uploader("Upload a data file (CSV/Excel)", type=["csv", "xlsx"])
         if uploaded_file:
