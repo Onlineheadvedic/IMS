@@ -30,7 +30,8 @@ role_choice = st.sidebar.radio("Select View", ["User", "Admin"])
 
 # ✅ Setup Admin Passwords
 admin.config(
-    ADMIN_PASSWORD = st.secrets["admin_password"]
+    ADMIN_PASSWORD = st.secrets["admin_password"],
+    secure = True
 )
 
 if role_choice == "Admin":
