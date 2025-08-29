@@ -31,12 +31,19 @@ role_choice = st.sidebar.radio("Select View", ["User", "Admin"])
 if role_choice == "Admin":
     pwd = st.sidebar.text_input("Enter Admin Password", type="password")
     admin_secret = st.secrets.get("admin_password")
-    if pwd == admin_secret:   # ✅ Check against Streamlit secrets
-        role = "Admin"
-        st.sidebar.success("✅ Admin access granted")
-    else:
-        st.sidebar.error("❌ Incorrect password. Falling back to User view.")
+
+    if admin_secret is None:
+        st.sidebar.error("❌ Admin password not found in secrets!")
         role = "User"
+    else:
+        # Strip any spaces just in case
+        if pwd.strip() == admin_secret.strip():
+            role = "Admin"
+            st.sidebar.success("✅ Admin access granted")
+        else:
+            role = "User"
+            if pwd:  # only show error if something typed
+                st.sidebar.error("❌ Incorrect password. Falling back to User view.")
 else:
     role = "User"
 
