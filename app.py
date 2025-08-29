@@ -30,7 +30,8 @@ role_choice = st.sidebar.radio("Select View", ["User", "Admin"])
 
 if role_choice == "Admin":
     pwd = st.sidebar.text_input("Enter Admin Password", type="password")
-    if pwd == st.secrets["admin_password"]:   # ✅ Check against Streamlit secrets
+    admin_secret = st.secrets.get("admin_password", None)
+    if pwd == admin_secret:   # ✅ Check against Streamlit secrets
         role = "Admin"
         st.sidebar.success("✅ Admin access granted")
     else:
