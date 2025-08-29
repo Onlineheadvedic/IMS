@@ -28,9 +28,14 @@ cloudinary.config(
 # ================================
 role_choice = st.sidebar.radio("Select View", ["User", "Admin"])
 
+# ✅ Setup Admin Passwords
+admin.config(
+    ADMIN_PASSWORD = st.secrets["admin_password"]
+)
+
 if role_choice == "Admin":
     pwd = st.sidebar.text_input("Enter Admin Password", type="password")
-    if pwd == st.secrets["admin_password"]:   # ✅ Check against Streamlit secrets
+    if pwd == ADMIN_PASSWORD:   # ✅ Check against Streamlit secrets
         role = "Admin"
         st.sidebar.success("✅ Admin access granted")
     else:
