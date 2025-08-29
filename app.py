@@ -2,12 +2,15 @@ import streamlit as st
 
 st.set_page_config(page_title="Inventory Dashboard", layout="wide")
 
-st.title("📦 Inventory Dashboard")
+st.title("📦 Inventory Dashboard — Shopify + Warehouse + EBO")
 
-st.markdown("""
-Welcome!  
-- If you are **Admin**, go to the **Admin page** (from sidebar) and upload files.  
-- If you are a **User**, go to the **User page** to view results.
-""")
+st.markdown(
+    """
+Welcome! Use the sidebar to navigate:
 
-st.info("Use the sidebar to navigate between **Admin** and **User** views.")
+- **Admin**: Upload data files (password protected).
+- **User**: View dashboards and insights (read-only).
+"""
+)
+
+st.info("Tip: Configure credentials in **Settings → Secrets** on Streamlit Community Cloud.")
