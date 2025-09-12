@@ -155,31 +155,33 @@ with tabs[2]:
         st.info("No order data to analyze.")
 
 with tabs[3]:
-    st.subheader("Listed vs Non-listed Products (with fuzzy matching)")
+    st.subheader("Listed vs Non-listed Products (Robust Fuzzy Matching)")
 
     warehouse_designs = warehouse_df["Design No"].dropna().astype(str).unique()
     shopify_designs = shopify_df["Design No"].dropna().astype(str).unique()
 
-    listed = []
-    non_listed = []
+    threshold = 80  # Adjust as needed
 
-    threshold = 80  # You can adjust this threshold
+    # Use lists to collect indices, not just design numbers
+    listed_idx = []
+    non_listed_idx = []
 
-    for design in warehouse_designs:
+    for idx, row in warehouse_df.iterrows():
+        design = str(row["Design No"]).strip()
         match, score = process.extractOne(design, shopify_designs, scorer=fuzz.WRatio)
-        if score >= threshold:
-            listed.append(design)
+        if match is not None and score >= threshold:
+            listed_idx.append(idx)
         else:
-            non_listed.append(design)
+            non_listed_idx.append(idx)
 
-    st.metric("Listed Products", len(listed))
-    st.metric("Non-Listed Products", len(non_listed))
+    st.metric("Listed Products", len(listed_idx))
+    st.metric("Non-Listed Products", len(non_listed_idx))
 
     st.write("### Listed Products (Available Online)")
-    st.dataframe(warehouse_df[warehouse_df["Design No"].astype(str).isin(listed)])
+    st.dataframe(warehouse_df.iloc[listed_idx])
 
     st.write("### Non-Listed Products (Photoshoot Required)")
-    st.dataframe(warehouse_df[warehouse_df["Design No"].astype(str).isin(non_listed)])
+    st.dataframe(warehouse_df.iloc[non_listed_idx])
 with tabs[4]:
     st.subheader("Image Availability from Google Drive")
     service = build("drive", "v3", credentials=creds)
