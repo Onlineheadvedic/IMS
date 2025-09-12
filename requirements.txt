@@ -1,6 +1,9 @@
-streamlit
-pandas
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+gspread
+google-api-python-client
 rapidfuzz
-openpyxl
 matplotlib
-cloudinary
+pandas
+streamlit
