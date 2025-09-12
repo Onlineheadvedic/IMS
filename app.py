@@ -155,24 +155,29 @@ with tabs[2]:
         st.info("No order data to analyze.")
 
 with tabs[3]:
-    st.subheader("Listed vs Non-listed Products")
-    
-    # Get unique design numbers in warehouse and shopify
-    warehouse_designs = set(warehouse_df["Design No"].dropna().astype(str).unique())
-    shopify_designs = set(shopify_df["Design No"].dropna().astype(str).unique())
-    
-    # Designs that are in warehouse and also in shopify are listed
-    listed = warehouse_designs.intersection(shopify_designs)
-    # Designs in warehouse but NOT in shopify are non-listed
-    non_listed = warehouse_designs.difference(shopify_designs)
-    
+    st.subheader("Listed vs Non-listed Products (with fuzzy matching)")
+
+    warehouse_designs = warehouse_df["Design No"].dropna().astype(str).unique()
+    shopify_designs = shopify_df["Design No"].dropna().astype(str).unique()
+
+    listed = []
+    non_listed = []
+
+    threshold = 80  # You can adjust this threshold
+
+    for design in warehouse_designs:
+        match, score = process.extractOne(design, shopify_designs, scorer=fuzz.WRatio)
+        if score >= threshold:
+            listed.append(design)
+        else:
+            non_listed.append(design)
+
     st.metric("Listed Products", len(listed))
     st.metric("Non-Listed Products", len(non_listed))
-    
-    # Filter warehouse_df for listed and non-listed designs
+
     st.write("### Listed Products (Available Online)")
     st.dataframe(warehouse_df[warehouse_df["Design No"].astype(str).isin(listed)])
-    
+
     st.write("### Non-Listed Products (Photoshoot Required)")
     st.dataframe(warehouse_df[warehouse_df["Design No"].astype(str).isin(non_listed)])
 with tabs[4]:
