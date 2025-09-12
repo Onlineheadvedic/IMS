@@ -7,68 +7,77 @@ from rapidfuzz import fuzz, process
 from datetime import timedelta
 import matplotlib.pyplot as plt
 
+# Configure page
 st.set_page_config(page_title="Inventory Dashboard", layout="wide")
 
-# ------------------------
-# 1. Authenticate Google APIs
-# ------------------------
+# Load secrets
+SERVICE_ACCOUNT_INFO = st.secrets["service_account"]
 SPREADSHEET_ID = st.secrets["spreadsheet_id"]
 DRIVE_FOLDER_ID = st.secrets["drive_folder_id"]
-SERVICE_ACCOUNT_INFO = st.secrets["service_account"]
+ADMIN_PASSWORD = st.secrets["admin_password"]
+CLOUDINARY_CONFIG = st.secrets["cloudinary"]
 
-SCOPES = ['https://www.googleapis.com/auth/spreadsheets',
-          'https://www.googleapis.com/auth/drive']
+# Set Google API scopes
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
 
+# Authenticate Google service account
 creds = Credentials.from_service_account_info(SERVICE_ACCOUNT_INFO, scopes=SCOPES)
 gc = gspread.authorize(creds)
 
-# ------------------------
-# 2. Google Sheet Data Loader
-# ------------------------
-def fetch_sheet_df(ws_name):
+# Cloudinary config (optional, if you use it)
+import cloudinary
+cloudinary.config(
+    cloud_name=CLOUDINARY_CONFIG["cloud_name"],
+    api_key=CLOUDINARY_CONFIG["api_key"],
+    api_secret=CLOUDINARY_CONFIG["api_secret"],
+    secure=True,
+)
+
+# Helper: Fetch worksheet data as DataFrame
+def fetch_sheet_df(sheet_name):
     sh = gc.open_by_key(SPREADSHEET_ID)
-    ws = sh.worksheet(ws_name)
-    return pd.DataFrame(ws.get_all_records())
+    ws = sh.worksheet(sheet_name)
+    records = ws.get_all_records()
+    return pd.DataFrame(records)
 
-# ------------------------
-# 3. User Login
-# ------------------------
-def login():
-    st.sidebar.subheader("Login")
-    username = st.sidebar.text_input("Username")
-    password = st.sidebar.text_input("Password", type="password")
-    if st.sidebar.button("Login"):
-        users_df = fetch_sheet_df("Users")
-        if ((users_df["Username"] == username) & (users_df["Password"] == password)).any():
-            st.session_state["logged_in"] = True
-            st.success(f"Welcome, {username}!")
-        else:
-            st.warning("Incorrect username or password.")
-            st.session_state["logged_in"] = False
+# Helper: fuzzy matching
+def fuzzy_best_match(query, choices):
+    if not query or not len(choices):
+        return None, 0
+    match = process.extractOne(query, choices, scorer=fuzz.WRatio)
+    if match:
+        return match[0], match[1]
+    return None, 0
 
-if "logged_in" not in st.session_state:
-    st.session_state["logged_in"] = False
+# Admin password sidebar input to select role
+role_choice = st.sidebar.radio("Select View", ["User", "Admin"])
+if role_choice == "Admin":
+    pwd = st.sidebar.text_input("Enter Admin Password", type="password")
+    if pwd == ADMIN_PASSWORD:
+        role = "Admin"
+        st.sidebar.success("✅ Admin access granted")
+    else:
+        role = "User"
+        st.sidebar.error("❌ Incorrect password. Accessing User view.")
+else:
+    role = "User"
 
-if not st.session_state["logged_in"]:
-    login()
-    st.stop()
-
-# ------------------------
-# 4. Load Inventory Data
-# ------------------------
+# Load data from Google Sheets
 shopify_df = fetch_sheet_df("Shopify")
 warehouse_df = fetch_sheet_df("Warehouse")
 ebo_df = fetch_sheet_df("EBO")
 orders_df = fetch_sheet_df("Orders")
+users_df = fetch_sheet_df("Users")  # For login if you want to extend
 
-# Clean Data (string strip & convert Design No, Barcode)
+# Clean Design No and Barcode columns for matching
 for df in [shopify_df, warehouse_df, ebo_df]:
     df["Design No"] = df["Design No"].astype(str).str.strip()
     df["Barcode"] = df["Barcode"].astype(str).str.strip()
 
-# ------------------------
-# 5. Dashboard Metrics
-# ------------------------
+# Main dashboard metrics
 wh_total = warehouse_df["Closing Qty"].sum()
 ebo_total = ebo_df["Closing Qty"].sum()
 shop_total = shopify_df["Closing Qty"].sum()
@@ -80,18 +89,7 @@ col2.metric("EBO Qty", ebo_total)
 col3.metric("Shopify Qty", shop_total)
 col4.metric("Overall Qty", overall_total)
 
-# Fuzzy match helper
-def fuzzy_best_match(query, choices):
-    if not query or not len(choices):
-        return None, 0
-    match = process.extractOne(query, choices, scorer=fuzz.WRatio)
-    if match:
-        return match[0], match[1]
-    return None, 0
-
-# ------------------------
-# 6. Tabs Layout
-# ------------------------
+# Tab layout
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📊 Inventory Overview", "🔍 Search", "📈 Sales Trends",
     "📂 Listed vs Non-Listed", "📷 Image Availability"
@@ -110,12 +108,12 @@ with tab1:
     merged = merged.merge(ebo_group, on=["Design No", "Barcode"], how="outer")
     merged.rename(columns={"Closing Qty": "Closing Qty_EBO"}, inplace=True)
     merged.fillna(0, inplace=True)
-
     merged["Total_QTY"] = merged[["Closing Qty_Warehouse", "Closing Qty_Shopify", "Closing Qty_EBO"]].sum(axis=1)
+
     st.dataframe(merged.sort_values("Total_QTY", ascending=False).head(50))
 
     top20 = merged.sort_values("Total_QTY", ascending=False).head(20)
-    fig, ax = plt.subplots(figsize=(10,5))
+    fig, ax = plt.subplots(figsize=(10, 5))
     ax.bar(top20["Design No"], top20["Total_QTY"], color="skyblue")
     plt.xticks(rotation=45, ha="right")
     st.pyplot(fig)
@@ -138,7 +136,6 @@ with tab2:
         results.append({"Source": "Total", "Qty": sum(r["Qty"] for r in results)})
         st.table(pd.DataFrame(results))
 
-        # Show CDN image if available
         cdn = None
         if "CDN link" in shopify_df.columns:
             if query in shopify_df["Barcode"].values:
@@ -150,7 +147,7 @@ with tab2:
         if cdn:
             st.image(cdn, caption=f"Design {query}")
         else:
-            st.warning("No image found.")
+            st.warning("No CDN image found.")
 
 # Tab 3: Sales Trends
 with tab3:
@@ -191,7 +188,7 @@ with tab4:
 with tab5:
     st.header("📷 Image Availability from Google Drive")
     designs = warehouse_df["Design No"].dropna().astype(str).tolist()
-    service = build('drive', 'v3', credentials=creds)
+    service = build("drive", "v3", credentials=creds)
     results = []
     for design in designs:
         query = f"'{DRIVE_FOLDER_ID}' in parents and name contains '{design}' and trashed=false"
