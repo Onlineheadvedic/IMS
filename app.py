@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Inventory Dashboard", layout="wide")
 
+# Load secrets
 SERVICE_ACCOUNT_INFO = st.secrets["service_account"]
 SPREADSHEET_ID = st.secrets["spreadsheet_id"]
 DRIVE_FOLDER_ID = st.secrets["drive_folder_id"]
@@ -59,9 +60,11 @@ warehouse_df = fetch_sheet_df("Warehouse")
 ebo_df = fetch_sheet_df("EBO")
 orders_df = fetch_sheet_df("Orders")
 
+# Convert Closing Qty columns to numeric, coercing errors to NaN
 for df in (shopify_df, warehouse_df, ebo_df):
     df["Design No"] = df["Design No"].astype(str).str.strip()
     df["Barcode"] = df["Barcode"].astype(str).str.strip()
+    df["Closing Qty"] = pd.to_numeric(df["Closing Qty"], errors="coerce")
 
 wh_total = warehouse_df["Closing Qty"].sum()
 ebo_total = ebo_df["Closing Qty"].sum()
