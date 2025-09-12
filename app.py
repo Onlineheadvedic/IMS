@@ -156,20 +156,25 @@ with tabs[2]:
 
 with tabs[3]:
     st.subheader("Listed vs Non-listed Products")
-    shopify_designs = set(shopify_df["Design No"].dropna().astype(str))
-    warehouse_designs = set(warehouse_df["Design No"].dropna().astype(str))
-    listed = warehouse_designs & shopify_designs
-    non_listed = warehouse_designs - shopify_designs
-
+    
+    # Get unique design numbers in warehouse and shopify
+    warehouse_designs = set(warehouse_df["Design No"].dropna().astype(str).unique())
+    shopify_designs = set(shopify_df["Design No"].dropna().astype(str).unique())
+    
+    # Designs that are in warehouse and also in shopify are listed
+    listed = warehouse_designs.intersection(shopify_designs)
+    # Designs in warehouse but NOT in shopify are non-listed
+    non_listed = warehouse_designs.difference(shopify_designs)
+    
     st.metric("Listed Products", len(listed))
     st.metric("Non-Listed Products", len(non_listed))
-
+    
+    # Filter warehouse_df for listed and non-listed designs
     st.write("### Listed Products (Available Online)")
-    st.dataframe(warehouse_df[warehouse_df["Design No"].isin(listed)])
-
+    st.dataframe(warehouse_df[warehouse_df["Design No"].astype(str).isin(listed)])
+    
     st.write("### Non-Listed Products (Photoshoot Required)")
-    st.dataframe(warehouse_df[warehouse_df["Design No"].isin(non_listed)])
-
+    st.dataframe(warehouse_df[warehouse_df["Design No"].astype(str).isin(non_listed)])
 with tabs[4]:
     st.subheader("Image Availability from Google Drive")
     service = build("drive", "v3", credentials=creds)
