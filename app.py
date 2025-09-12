@@ -1,132 +1,77 @@
-import pandas as pd
 import streamlit as st
+import pandas as pd
+from google.oauth2.service_account import Credentials
+import gspread
+from googleapiclient.discovery import build
 from rapidfuzz import fuzz, process
 from datetime import timedelta
 import matplotlib.pyplot as plt
-import os
 
-# 🔹 Cloudinary
-import cloudinary
-import cloudinary.api
-import cloudinary.uploader
-
-# ================================
-# CONFIG
-# ================================
 st.set_page_config(page_title="Inventory Dashboard", layout="wide")
 
-# ✅ Setup Cloudinary config (securely from secrets)
-cloudinary.config(
-    cloud_name=st.secrets["cloudinary"]["cloud_name"],
-    api_key=st.secrets["cloudinary"]["api_key"],
-    api_secret=st.secrets["cloudinary"]["api_secret"],
-    secure=True
-)
+# ------------------------
+# 1. Authenticate Google APIs
+# ------------------------
+SPREADSHEET_ID = st.secrets["spreadsheet_id"]
+DRIVE_FOLDER_ID = st.secrets["drive_folder_id"]
+SERVICE_ACCOUNT_INFO = st.secrets["service_account"]
 
-# ================================
-# ROLE SELECTION WITH PASSWORD
-# ================================
-role_choice = st.sidebar.radio("Select View", ["User", "Admin"])
+SCOPES = ['https://www.googleapis.com/auth/spreadsheets',
+          'https://www.googleapis.com/auth/drive']
 
-if role_choice == "Admin":
-    pwd = st.sidebar.text_input("Enter Admin Password", type="password")
-    admin_secret = st.secrets.get("admin_password")
+creds = Credentials.from_service_account_info(SERVICE_ACCOUNT_INFO, scopes=SCOPES)
+gc = gspread.authorize(creds)
 
-    if admin_secret is None:
-        st.sidebar.error("❌ Admin password not found in secrets!")
-        role = "User"
-    else:
-        # Strip any spaces just in case
-        if pwd.strip() == admin_secret.strip():
-            role = "Admin"
-            st.sidebar.success("✅ Admin access granted")
+# ------------------------
+# 2. Google Sheet Data Loader
+# ------------------------
+def fetch_sheet_df(ws_name):
+    sh = gc.open_by_key(SPREADSHEET_ID)
+    ws = sh.worksheet(ws_name)
+    return pd.DataFrame(ws.get_all_records())
+
+# ------------------------
+# 3. User Login
+# ------------------------
+def login():
+    st.sidebar.subheader("Login")
+    username = st.sidebar.text_input("Username")
+    password = st.sidebar.text_input("Password", type="password")
+    if st.sidebar.button("Login"):
+        users_df = fetch_sheet_df("Users")
+        if ((users_df["Username"] == username) & (users_df["Password"] == password)).any():
+            st.session_state["logged_in"] = True
+            st.success(f"Welcome, {username}!")
         else:
-            role = "User"
-            if pwd:  # only show error if something typed
-                st.sidebar.error("❌ Incorrect password. Falling back to User view.")
-else:
-    role = "User"
+            st.warning("Incorrect username or password.")
+            st.session_state["logged_in"] = False
 
-# Required Columns
-REQ_SHOPIFY = ["Barcode", "Design No", "Closing Qty", "CDN link"]
-REQ_WAREHOUSE = ["Barcode", "Design No", "Closing Qty"]
-REQ_EBO = ["Barcode", "Design No", "Closing Qty"]
-REQ_ORDERS = ["Design No", "Quantity", "Created at"]
+if "logged_in" not in st.session_state:
+    st.session_state["logged_in"] = False
 
+if not st.session_state["logged_in"]:
+    login()
+    st.stop()
 
-# Helpers
-def fuzzy_best_match(query, choices):
-    if not query or not len(choices):
-        return None, 0
-    match = process.extractOne(query, choices, scorer=fuzz.WRatio)
-    if match:
-        return match[0], match[1]
-    return None, 0
+# ------------------------
+# 4. Load Inventory Data
+# ------------------------
+shopify_df = fetch_sheet_df("Shopify")
+warehouse_df = fetch_sheet_df("Warehouse")
+ebo_df = fetch_sheet_df("EBO")
+orders_df = fetch_sheet_df("Orders")
 
+# Clean Data (string strip & convert Design No, Barcode)
+for df in [shopify_df, warehouse_df, ebo_df]:
+    df["Design No"] = df["Design No"].astype(str).str.strip()
+    df["Barcode"] = df["Barcode"].astype(str).str.strip()
 
-def load_file(file, req_cols, label):
-    if file is None:
-        return None
-    df = pd.read_csv(file) if file.name.endswith(".csv") else pd.read_excel(file)
-    df.columns = df.columns.str.strip()
-    missing = [c for c in req_cols if c not in df.columns]
-    if missing:
-        st.error(f"{label} is missing required columns: {missing}")
-        return None
-    df["Design No"] = df["Design No"].astype(str)
-    if "Barcode" in df.columns:
-        df["Barcode"] = df["Barcode"].astype(str)
-    if "Closing Qty" in df.columns:
-        df["Closing Qty"] = pd.to_numeric(df["Closing Qty"], errors="coerce").fillna(0).astype(int)
-    if "Quantity" in df.columns:
-        df["Quantity"] = pd.to_numeric(df["Quantity"], errors="coerce").fillna(0).astype(int)
-    if "Created at" in df.columns:
-        df["Created at"] = pd.to_datetime(df["Created at"], errors="coerce")
-    return df
-
-
-# ================================
-# FILE UPLOADS (ADMIN ONLY)
-# ================================
-if role == "Admin":
-    st.sidebar.header("Upload Data")
-
-    shopify_file = st.sidebar.file_uploader("Shopify Inventory", type=["csv", "xlsx"])
-    warehouse_file = st.sidebar.file_uploader("Warehouse Inventory", type=["csv", "xlsx"])
-    ebo_file = st.sidebar.file_uploader("EBO Inventory", type=["csv", "xlsx"])
-    orders_file = st.sidebar.file_uploader("Shopify Orders", type=["csv", "xlsx"])
-
-    shopify_df = load_file(shopify_file, REQ_SHOPIFY, "Shopify")
-    warehouse_df = load_file(warehouse_file, REQ_WAREHOUSE, "Warehouse")
-    ebo_df = load_file(ebo_file, REQ_EBO, "EBO")
-    orders_df = load_file(orders_file, REQ_ORDERS, "Orders")
-
-    # ✅ Save uploaded data in session_state so users can see it
-    st.session_state["shopify_df"] = shopify_df
-    st.session_state["warehouse_df"] = warehouse_df
-    st.session_state["ebo_df"] = ebo_df
-    st.session_state["orders_df"] = orders_df
-
-else:  # USER MODE
-    # ✅ Load data from session_state (uploaded earlier by admin)
-    shopify_df = st.session_state.get("shopify_df")
-    warehouse_df = st.session_state.get("warehouse_df")
-    ebo_df = st.session_state.get("ebo_df")
-    orders_df = st.session_state.get("orders_df")
-
-    if not any([shopify_df is not None, warehouse_df is not None, ebo_df is not None]):
-        st.warning("⚠️ No data available. Please ask Admin to upload files.")
-        st.stop()
-
-# ================================
-# DASHBOARD (COMMON FOR BOTH)
-# ================================
-st.title("📦 Inventory Dashboard — Shopify + Warehouse + EBO")
-
-# Key Metrics
-wh_total = warehouse_df["Closing Qty"].sum() if warehouse_df is not None else 0
-ebo_total = ebo_df["Closing Qty"].sum() if ebo_df is not None else 0
-shop_total = shopify_df["Closing Qty"].sum() if shopify_df is not None else 0
+# ------------------------
+# 5. Dashboard Metrics
+# ------------------------
+wh_total = warehouse_df["Closing Qty"].sum()
+ebo_total = ebo_df["Closing Qty"].sum()
+shop_total = shopify_df["Closing Qty"].sum()
 overall_total = wh_total + ebo_total + shop_total
 
 col1, col2, col3, col4 = st.columns(4)
@@ -135,49 +80,47 @@ col2.metric("EBO Qty", ebo_total)
 col3.metric("Shopify Qty", shop_total)
 col4.metric("Overall Qty", overall_total)
 
-# ================================
-# EXISTING TABS (Unchanged)
-# ================================
+# Fuzzy match helper
+def fuzzy_best_match(query, choices):
+    if not query or not len(choices):
+        return None, 0
+    match = process.extractOne(query, choices, scorer=fuzz.WRatio)
+    if match:
+        return match[0], match[1]
+    return None, 0
+
+# ------------------------
+# 6. Tabs Layout
+# ------------------------
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📊 Inventory Overview", "🔍 Search", "📈 Sales Trends",
     "📂 Listed vs Non-Listed", "📷 Image Availability"
 ])
 
-# -----------------
-# Tab 1 — Overview
-# -----------------
+# Tab 1: Inventory Overview
 with tab1:
-    if shopify_df is not None or warehouse_df is not None or ebo_df is not None:
-        st.subheader("Inventory Overview")
-        combined = []
-        for label, df in [("Warehouse", warehouse_df), ("Shopify", shopify_df), ("EBO", ebo_df)]:
-            if df is not None and "Closing Qty" in df.columns:
-                agg = df.groupby(["Design No", "Barcode"], dropna=False)["Closing Qty"].sum().reset_index()
-                agg.rename(columns={"Closing Qty": f"{label}_Qty"}, inplace=True)
-                combined.append(agg)
+    st.subheader("Inventory Overview")
+    core_cols = ["Design No", "Barcode", "Color", "Size", "Closing Qty"]
 
-        if combined:
-            merged = combined[0]
-            for part in combined[1:]:
-                merged = merged.merge(part, on=["Design No", "Barcode"], how="outer")
-            merged = merged.fillna(0)
+    ws_group = warehouse_df[core_cols].groupby(["Design No", "Barcode"]).sum().reset_index()
+    sh_group = shopify_df[core_cols].groupby(["Design No", "Barcode"]).sum().reset_index()
+    ebo_group = ebo_df[core_cols].groupby(["Design No", "Barcode"]).sum().reset_index()
 
-            qty_cols = [c for c in merged.columns if c.endswith("_Qty")]
-            merged["Total_QTY"] = merged[qty_cols].sum(axis=1)
+    merged = ws_group.merge(sh_group, on=["Design No", "Barcode"], how="outer", suffixes=('_Warehouse', '_Shopify'))
+    merged = merged.merge(ebo_group, on=["Design No", "Barcode"], how="outer")
+    merged.rename(columns={"Closing Qty": "Closing Qty_EBO"}, inplace=True)
+    merged.fillna(0, inplace=True)
 
-            st.dataframe(merged.sort_values("Total_QTY", ascending=False).head(50))
+    merged["Total_QTY"] = merged[["Closing Qty_Warehouse", "Closing Qty_Shopify", "Closing Qty_EBO"]].sum(axis=1)
+    st.dataframe(merged.sort_values("Total_QTY", ascending=False).head(50))
 
-            # Chart
-            st.subheader("Top 20 Designs by Inventory")
-            top20 = merged.sort_values("Total_QTY", ascending=False).head(20)
-            fig, ax = plt.subplots(figsize=(10, 5))
-            ax.bar(top20["Design No"], top20["Total_QTY"], color="skyblue")
-            plt.xticks(rotation=45, ha="right")
-            st.pyplot(fig)
+    top20 = merged.sort_values("Total_QTY", ascending=False).head(20)
+    fig, ax = plt.subplots(figsize=(10,5))
+    ax.bar(top20["Design No"], top20["Total_QTY"], color="skyblue")
+    plt.xticks(rotation=45, ha="right")
+    st.pyplot(fig)
 
-# -----------------
-# Tab 2 — Search
-# -----------------
+# Tab 2: Search
 with tab2:
     st.subheader("Search by Design No or Barcode")
     query = st.text_input("Enter Design No or Barcode")
@@ -185,111 +128,81 @@ with tab2:
         results = []
         for label, df in [("Warehouse", warehouse_df), ("Shopify", shopify_df), ("EBO", ebo_df)]:
             qty = 0
-            if df is not None:
-                if "Barcode" in df.columns and query in df["Barcode"].values:
-                    qty = df[df["Barcode"] == query]["Closing Qty"].sum()
-                else:
-                    match, score = fuzzy_best_match(query, df["Design No"].unique())
-                    if match:
-                        qty = df[df["Design No"] == match]["Closing Qty"].sum()
+            if "Barcode" in df.columns and query in df["Barcode"].values:
+                qty = df[df["Barcode"] == query]["Closing Qty"].sum()
+            else:
+                match, _ = fuzzy_best_match(query, df["Design No"].unique())
+                if match:
+                    qty = df[df["Design No"] == match]["Closing Qty"].sum()
             results.append({"Source": label, "Qty": int(qty)})
         results.append({"Source": "Total", "Qty": sum(r["Qty"] for r in results)})
         st.table(pd.DataFrame(results))
 
-        # CDN Image
-        if shopify_df is not None and "CDN link" in shopify_df.columns:
-            cdn = None
-            if "Barcode" in shopify_df.columns and query in shopify_df["Barcode"].values:
+        # Show CDN image if available
+        cdn = None
+        if "CDN link" in shopify_df.columns:
+            if query in shopify_df["Barcode"].values:
                 cdn = shopify_df.loc[shopify_df["Barcode"] == query, "CDN link"].iloc[0]
             else:
                 match, _ = fuzzy_best_match(query, shopify_df["Design No"].unique())
                 if match:
                     cdn = shopify_df.loc[shopify_df["Design No"] == match, "CDN link"].iloc[0]
-            if cdn:
-                st.image(cdn, caption=f"Design {query}")
-            else:
-                st.warning("No CDN link found.")
+        if cdn:
+            st.image(cdn, caption=f"Design {query}")
+        else:
+            st.warning("No image found.")
 
-# -----------------
-# Tab 3 — Sales Trends
-# -----------------
+# Tab 3: Sales Trends
 with tab3:
     st.subheader("📈 Sales Trends (last 3 days)")
-    reorder_designs, notselling_designs = [], []
-    if orders_df is not None:
+    reorder, notselling = [], []
+    if not orders_df.empty:
+        orders_df["Created at"] = pd.to_datetime(orders_df["Created at"])
         max_date = orders_df["Created at"].max()
-        if pd.notnull(max_date):
-            cutoff = max_date - timedelta(days=3)
-            recent = orders_df[orders_df["Created at"] >= cutoff]
-            sales = recent.groupby("Design No")["Quantity"].sum().reset_index()
-            for _, row in sales.iterrows():
-                if row["Quantity"] > 10:
-                    reorder_designs.append(row["Design No"])
-                elif row["Quantity"] < 10:
-                    notselling_designs.append(row["Design No"])
-
+        cutoff = max_date - timedelta(days=3)
+        recent = orders_df[orders_df["Created at"] >= cutoff]
+        sales = recent.groupby("Design No")["Quantity"].sum().reset_index()
+        for _, row in sales.iterrows():
+            if row["Quantity"] > 10:
+                reorder.append(row["Design No"])
+            elif row["Quantity"] < 10:
+                notselling.append(row["Design No"])
         st.write("### 🚀 Reorder Designs")
-        st.table(pd.DataFrame({"Design No": reorder_designs})) if reorder_designs else st.info("No designs to reorder.")
-
+        st.table(pd.DataFrame({"Design No": reorder})) if reorder else st.info("No designs to reorder.")
         st.write("### 💤 Not Selling")
-        st.table(pd.DataFrame({"Design No": notselling_designs})) if notselling_designs else st.info("All moving well.")
+        st.table(pd.DataFrame({"Design No": notselling})) if notselling else st.info("All moving well.")
 
-# -----------------
-# Tab 4 — Listed vs Non-Listed
-# -----------------
+# Tab 4: Listed vs Non-Listed
 with tab4:
     st.header("🛍️ Product Classification")
-    if shopify_df is not None and (warehouse_df is not None or ebo_df is not None):
-        shopify_designs = set(shopify_df["Design No"].astype(str).tolist())
-        external_df_list = []
-        if warehouse_df is not None:
-            external_df_list.append(warehouse_df[["Design No", "Barcode", "Closing Qty"]])
-        if ebo_df is not None:
-            external_df_list.append(ebo_df[["Design No", "Barcode", "Closing Qty"]])
-        external_df = pd.concat(external_df_list, ignore_index=True).drop_duplicates()
+    shop_designs = set(shopify_df["Design No"].dropna().astype(str))
+    warehouse_designs = set(warehouse_df["Design No"].dropna().astype(str))
+    listed = warehouse_designs & shop_designs
+    nonlisted = warehouse_designs - shop_designs
 
-        listed, nonlisted = [], []
-        for _, row in external_df.iterrows():
-            d = str(row["Design No"])
-            if d in shopify_designs:
-                listed.append(row)
-            else:
-                nonlisted.append(row)
+    st.metric("Listed", len(listed))
+    st.metric("Non-Listed", len(nonlisted))
+    st.write("✅ Listed Products")
+    st.dataframe(warehouse_df[warehouse_df["Design No"].isin(listed)])
+    st.write("📸 Photoshoot Required")
+    st.dataframe(warehouse_df[warehouse_df["Design No"].isin(nonlisted)])
 
-        st.metric("Listed", len(listed))
-        st.metric("Non-Listed", len(nonlisted))
-
-        if listed:
-            st.write("✅ Listed Products")
-            st.dataframe(pd.DataFrame(listed))
-        if nonlisted:
-            st.write("📸 Photoshoot Required")
-            st.dataframe(pd.DataFrame(nonlisted))
-
-# -----------------
-# Tab 5 — Image Availability
-# -----------------
+# Tab 5: Image Availability from Google Drive
 with tab5:
-    st.header("📷 Image Availability from Cloudinary")
-    if warehouse_df is not None:
-        try:
-            cloud_files = cloudinary.api.resources(type="upload", max_results=500)["resources"]
-            file_map = {res["public_id"].lower(): res["secure_url"] for res in cloud_files}
-            availability = []
-            for _, row in warehouse_df.iterrows():
-                design = str(row["Design No"]).lower()
-                qty = row["Closing Qty"]
-                matched_url = None
-                for pid, url in file_map.items():
-                    if design in pid:
-                        matched_url = url
-                        break
-                availability.append({
-                    "Design No": design,
-                    "Closing Qty": qty,
-                    "Image Status": "✅ Available" if matched_url else "❌ Missing",
-                    "URL": matched_url or ""
-                })
-            st.dataframe(pd.DataFrame(availability))
-        except Exception as e:
-            st.error(f"Cloudinary API error: {e}")
+    st.header("📷 Image Availability from Google Drive")
+    designs = warehouse_df["Design No"].dropna().astype(str).tolist()
+    service = build('drive', 'v3', credentials=creds)
+    results = []
+    for design in designs:
+        query = f"'{DRIVE_FOLDER_ID}' in parents and name contains '{design}' and trashed=false"
+        resp = service.files().list(q=query, pageSize=1, fields="files(id, name)").execute()
+        files = resp.get("files", [])
+        if files:
+            file_id = files[0]["id"]
+            url = f"https://drive.google.com/uc?export=view&id={file_id}"
+            status = "✅ Available"
+        else:
+            url = ""
+            status = "❌ Missing"
+        results.append({"Design No": design, "Image Status": status, "URL": url})
+    st.dataframe(pd.DataFrame(results))
