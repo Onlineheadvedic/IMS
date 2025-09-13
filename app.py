@@ -139,7 +139,7 @@ with tabs[2]:
         cutoff_date = max_date - timedelta(days=3)
         recent_orders = orders_df[orders_df["Created at"] >= cutoff_date]
         sales_summary = recent_orders.groupby("Design No")["Quantity"].sum().reset_index()
-        sales_summary["Quantity"] = pd.to_numeric(sales_summary["Quantity"], errors="coerce")  # FIX
+        sales_summary["Quantity"] = pd.to_numeric(sales_summary["Quantity"], errors="coerce")
         reorder = sales_summary[sales_summary["Quantity"] > 10]["Design No"].tolist()
         not_selling = sales_summary[sales_summary["Quantity"] < 10]["Design No"].tolist()
         st.write("### Designs to Reorder")
@@ -155,7 +155,6 @@ with tabs[2]:
     else:
         st.info("No order data to analyze.")
 
-
 with tabs[3]:
     st.subheader("Listed vs Non-listed Products (Robust Fuzzy Matching)")
     threshold = 80
@@ -167,16 +166,12 @@ with tabs[3]:
             design = str(row["Design No"]).strip()
             if shopify_designs:
                 result = process.extractOne(design, shopify_designs, scorer=fuzz.WRatio)
-            result = process.extractOne(design, shopify_designs, scorer=fuzz.WRatio)
-if result is not None:
-    match, score = result
-    if score >= threshold:
-        listed_idx.append(idx)
-    else:
-        non_listed_idx.append(idx)
-else:
-    non_listed_idx.append(idx)
-
+                if result is not None:
+                    match, score = result
+                    if score >= threshold:
+                        listed_idx.append(idx)
+                    else:
+                        non_listed_idx.append(idx)
                 else:
                     non_listed_idx.append(idx)
             else:
