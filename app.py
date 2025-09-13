@@ -38,7 +38,10 @@ def fuzzy_best_match(query, choices, threshold=80):
         return None, 0
     if choices is None:
         choices = []
-    choices = list(choices)
+    try:
+        choices = [str(c) for c in choices]
+    except Exception:
+        choices = []
     if len(choices) == 0:
         return None, 0
     result = process.extractOne(query, choices, scorer=fuzz.WRatio)
