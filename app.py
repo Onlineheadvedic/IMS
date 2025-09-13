@@ -24,13 +24,7 @@ SCOPES = [
 creds = Credentials.from_service_account_info(SERVICE_ACCOUNT_INFO, scopes=SCOPES)
 gc = gspread.authorize(creds)
 
-import cloudinary
-cloudinary.config(
-    cloud_name=CLOUDINARY_CONFIG["cloud_name"],
-    api_key=CLOUDINARY_CONFIG["api_key"],
-    api_secret=CLOUDINARY_CONFIG["api_secret"],
-    secure=True,
-)
+
 
 def fetch_sheet_df(sheet_name):
     sh = gc.open_by_key(SPREADSHEET_ID)
