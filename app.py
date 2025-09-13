@@ -34,7 +34,12 @@ def fetch_sheet_df(sheet_name):
     return df
 
 def fuzzy_best_match(query, choices, threshold=80):
-    if not query or not choices:
+    if not query:
+        return None, 0
+    if choices is None:
+        choices = []
+    choices = list(choices)
+    if len(choices) == 0:
         return None, 0
     result = process.extractOne(query, choices, scorer=fuzz.WRatio)
     if result and result[1] >= threshold:
@@ -115,7 +120,6 @@ with tabs[1]:
     results.append({"Source": "Total", "Qty": sum(r["Qty"] for r in results)})
     st.table(pd.DataFrame(results))
 
-    # Show CDN image from Shopify if available
     cdn_link = None
     if not shopify_df.empty and "CDN link" in shopify_df.columns:
         barcodes = shopify_df["Barcode"].unique()
