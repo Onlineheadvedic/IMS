@@ -167,12 +167,16 @@ with tabs[3]:
             design = str(row["Design No"]).strip()
             if shopify_designs:
                 result = process.extractOne(design, shopify_designs, scorer=fuzz.WRatio)
-                if result is not None:
-                    match, score = result
-                    if score >= threshold:
-                        listed_idx.append(idx)
-                    else:
-                        non_listed_idx.append(idx)
+            result = process.extractOne(design, shopify_designs, scorer=fuzz.WRatio)
+if result is not None:
+    match, score = result
+    if score >= threshold:
+        listed_idx.append(idx)
+    else:
+        non_listed_idx.append(idx)
+else:
+    non_listed_idx.append(idx)
+
                 else:
                     non_listed_idx.append(idx)
             else:
