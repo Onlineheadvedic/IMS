@@ -191,25 +191,152 @@ with tabs[3]:
         st.dataframe(warehouse_df.iloc[non_listed_idx])
     else:
         st.info("Warehouse sheet is empty.")
+with tab4:
+    st.header("🛍️ Product Classification")
 
-with tabs[4]:
-    st.subheader("Image Availability from Google Drive")
-    if not warehouse_df.empty:
-        service = build("drive", "v3", credentials=creds)
-        designs = warehouse_df["Design No"].dropna().astype(str).unique()
-        image_data = []
-        for design in designs:
-            query = f"'{DRIVE_FOLDER_ID}' in parents and name contains '{design}' and trashed=false"
-            response = service.files().list(q=query, pageSize=1, fields="files(id, name)").execute()
-            files = response.get("files", [])
-            if files:
-                file_id = files[0]["id"]
-                url = f"https://drive.google.com/uc?export=view&id={file_id}"
-                status = "✅ Available"
-            else:
-                url = ""
-                status = "❌ Missing"
-            image_data.append({"Design No": design, "Image Status": status, "Image URL": url})
-        st.dataframe(pd.DataFrame(image_data))
+    if shopify_df is None:
+        st.warning("Please upload the Shopify file first in Tab 1.")
+    elif warehouse_df is None and ebo_df is None:
+        st.warning("Please upload Warehouse and/or EBO files in Tabs 2 & 3.")
     else:
-        st.info("Warehouse sheet is empty; cannot check images.")
+        # Collect Shopify identifiers
+        shopify_designs = set(shopify_df["Design No"].astype(str).tolist())
+        shopify_barcodes = set(shopify_df["Barcode"].astype(str).tolist())
+
+        # Merge Warehouse + EBO into one dataframe
+        external_df_list = []
+        if warehouse_df is not None:
+            external_df_list.append(warehouse_df[["Design No", "Barcode", "Closing Qty"]])
+        if ebo_df is not None:
+            external_df_list.append(ebo_df[["Design No", "Barcode", "Closing Qty"]])
+
+        external_df = pd.concat(external_df_list, ignore_index=True).drop_duplicates()
+
+        listed = []
+        nonlisted = []
+
+        for _, row in external_df.iterrows():
+            d = str(row.get("Design No", ""))
+            b = str(row.get("Barcode", ""))
+            closing_qty = row.get("Closing Qty", 0)
+
+            # ✅ Check exact match for Design No or Barcode
+            if (d in shopify_designs) or (b in shopify_barcodes):
+                listed.append({
+                    "Design No": d,
+                    "Barcode": b,
+                    "Closing Qty": closing_qty,
+                    "Match Type": "Exact"
+                })
+            else:
+                # ✅ Fuzzy match on Design No if exact fails
+                match_data = process.extractOne(d, shopify_designs)
+                if match_data:
+                    match, score = match_data[0], match_data[1]
+                    if score >= 80:
+                        listed.append({
+                            "Design No": d,
+                            "Barcode": b,
+                            "Closing Qty": closing_qty,
+                            "Match Type": f"Fuzzy ({score})"
+                        })
+                    else:
+                        nonlisted.append({
+                            "Design No": d,
+                            "Barcode": b,
+                            "Closing Qty": closing_qty
+                        })
+                else:
+                    nonlisted.append({
+                        "Design No": d,
+                        "Barcode": b,
+                        "Closing Qty": closing_qty
+                    })
+
+        # Convert to DataFrames
+        listed_df = pd.DataFrame(listed)
+        nonlisted_df = pd.DataFrame(nonlisted)
+
+        # Metrics
+        c1, c2 = st.columns(2)
+        c1.metric("Listed Products", len(listed_df))
+        c2.metric("Non-Listed Products", len(nonlisted_df))
+
+        # Show listed
+        st.write("### ✅ Listed Products (Matched with Shopify)")
+        if not listed_df.empty:
+            st.dataframe(listed_df)
+        else:
+            st.warning("No listed products found.")
+
+        # Show non-listed (Photoshoot Required)
+        st.write("### 📸 Photoshoot Required")
+        st.info("These designs exist in Warehouse/EBO but are missing in Shopify. (Includes Closing Qty)")
+        if not nonlisted_df.empty:
+            st.dataframe(nonlisted_df)
+        else:
+            st.success("No products pending photoshoot.")
+        import os
+
+# 🔹 Configure your Google Drive folder path
+image_folder = "/content/drive/MyDrive/ProductImages"
+
+tab5 = st.tabs(["📷 Image Availability"])[0]
+
+with tab5:
+    st.header("📷 Check Image Availability from Google Drive")
+
+    if warehouse_df is None:
+        st.warning("Please upload the Warehouse file first.")
+    else:
+        if not os.path.exists(image_folder):
+            st.error(f"Image folder not found: {image_folder}")
+        else:
+            # List all files in the folder
+            drive_files = os.listdir(image_folder)
+
+            availability = []
+            for _, row in warehouse_df.iterrows():
+                design_no = str(row.get("Design No", "")).strip()
+                closing_qty = row.get("Closing Qty", 0)
+
+                # Check if any file matches Design No
+                matched_file = None
+                for f in drive_files:
+                    if design_no.lower() in f.lower():  # Case-insensitive match
+                        matched_file = f
+                        break
+
+                if matched_file:
+                    file_path = os.path.join(image_folder, matched_file)
+                    availability.append({
+                        "Design No": design_no,
+                        "Closing Qty": closing_qty,
+                        "Image Status": "✅ Available",
+                        "Image File": f,
+                        "File Path": file_path
+                    })
+                else:
+                    availability.append({
+                        "Design No": design_no,
+                        "Closing Qty": closing_qty,
+                        "Image Status": "❌ Not Available",
+                        "Image File": "",
+                        "File Path": ""
+                    })
+
+            # Convert to DataFrame
+            availability_df = pd.DataFrame(availability)
+
+            st.write("### Image Availability Status")
+            st.dataframe(availability_df)
+
+            # ✅ Option: Show only missing images
+            missing = availability_df[availability_df["Image Status"] == "❌ Not Available"]
+            if not missing.empty:
+                st.warning("Missing images for these designs:")
+                st.table(missing[["Design No", "Closing Qty"]])
+
+
+
+
