@@ -34,23 +34,39 @@ def fetch_sheet_df(sheet_name, req_cols=None, label=""):
     if len(data) < 2:
         st.error(f"Sheet '{sheet_name}' is empty or missing header/data.")
         return None
-    df = pd.DataFrame(data[1:], columns=data)
-    # STRIP COLUMN NAMES ROBUSTLY - FIXED
-    df.columns = [str(col).strip() for col in df.columns]
+    df = pd.DataFrame(data[1:], columns=data[0])
+
+    # Normalize columns: strip spaces, lower case, remove internal spaces for matching
+    def normalize_col(col):
+        return str(col).strip().lower().replace(' ', '')
+
+    df.columns = [normalize_col(col) for col in df.columns]
+
     if req_cols:
-        missing = [c for c in req_cols if c not in df.columns]
+        req_cols_norm = [normalize_col(c) for c in req_cols]
+        missing = [c for c in req_cols_norm if c not in df.columns]
         if missing:
             st.error(f"{label} is missing required columns: {missing}")
             return None
-    df["Design No"] = df["Design No"].astype(str)
-    if "Barcode" in df.columns:
-        df["Barcode"] = df["Barcode"].astype(str)
-    if "Closing Qty" in df.columns:
-        df["Closing Qty"] = pd.to_numeric(df["Closing Qty"], errors="coerce").fillna(0).astype(int)
-    if "Quantity" in df.columns:
-        df["Quantity"] = pd.to_numeric(df["Quantity"], errors="coerce").fillna(0).astype(int)
-    if "Created at" in df.columns:
-        df["Created at"] = pd.to_datetime(df["Created at"], errors="coerce")
+
+    # Map normalized column names back to the actual columns for use
+    col_map = {normalize_col(col): col for col in data[0]}
+
+    # Rename dataframe columns to normalized names for consistent access
+    df.rename(columns={col_map[nc]: nc for nc in col_map}, inplace=True)
+
+    # Cast types using normalized column names
+    if "designno" in df.columns:
+        df["designno"] = df["designno"].astype(str)
+    if "barcode" in df.columns:
+        df["barcode"] = df["barcode"].astype(str)
+    if "closingqty" in df.columns:
+        df["closingqty"] = pd.to_numeric(df["closingqty"], errors="coerce").fillna(0).astype(int)
+    if "quantity" in df.columns:
+        df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce").fillna(0).astype(int)
+    if "createdat" in df.columns:
+        df["createdat"] = pd.to_datetime(df["createdat"], errors="coerce")
+
     return df
 
 def fuzzy_best_match(query, choices):
@@ -58,7 +74,7 @@ def fuzzy_best_match(query, choices):
         return None, 0
     match = process.extractOne(query, choices, scorer=fuzz.WRatio)
     if match:
-        return match, match[1]
+        return match[0], match[1]
     return None, 0
 
 # ---- Required Sheets ----
@@ -76,9 +92,9 @@ orders_df = fetch_sheet_df("Orders", REQ_ORDERS, "Orders")
 st.title("📦 Inventory Dashboard — Shopify + Warehouse + EBO")
 
 # ---- Key Metrics ----
-wh_total = warehouse_df["Closing Qty"].sum() if warehouse_df is not None else 0
-ebo_total = ebo_df["Closing Qty"].sum() if ebo_df is not None else 0
-shop_total = shopify_df["Closing Qty"].sum() if shopify_df is not None else 0
+wh_total = warehouse_df["closingqty"].sum() if warehouse_df is not None else 0
+ebo_total = ebo_df["closingqty"].sum() if ebo_df is not None else 0
+shop_total = shopify_df["closingqty"].sum() if shopify_df is not None else 0
 overall_total = wh_total + ebo_total + shop_total
 col1, col2, col3, col4, col5, col6 = st.columns(6)
 col1.metric("Warehouse Qty", wh_total)
@@ -89,16 +105,16 @@ col4.metric("Overall Qty", overall_total)
 # ---- Sales Trends (Reorder / Not Selling) ----
 reorder_designs, notselling_designs = [], []
 if orders_df is not None:
-    max_date = orders_df["Created at"].max()
+    max_date = orders_df["createdat"].max()
     if pd.notnull(max_date):
         cutoff = max_date - timedelta(days=3)
-        recent = orders_df[orders_df["Created at"] >= cutoff]
-        sales = recent.groupby("Design No")["Quantity"].sum().reset_index()
+        recent = orders_df[orders_df["createdat"] >= cutoff]
+        sales = recent.groupby("designno")["quantity"].sum().reset_index()
         for _, row in sales.iterrows():
-            if row["Quantity"] > 10:
-                reorder_designs.append(row["Design No"])
-            elif row["Quantity"] < 10:
-                notselling_designs.append(row["Design No"])
+            if row["quantity"] > 10:
+                reorder_designs.append(row["designno"])
+            elif row["quantity"] < 10:
+                notselling_designs.append(row["designno"])
 col5.metric("Reorder Designs (sales > 10, last 3d)", len(reorder_designs))
 col6.metric("Not Selling (sales < 10, last 3d)", len(notselling_designs))
 
@@ -113,22 +129,19 @@ tab1, tab2, tab3, tab4 = st.tabs([
 # ---- Inventory Overview Tab ----
 with tab1:
     st.subheader("Inventory Overview")
-    # Only proceed if at least one source is present
     if warehouse_df is not None or shopify_df is not None or ebo_df is not None:
-        # Build unified inventory table per Design No / Barcode / Size
         dfs = []
         for label, df in [("Warehouse", warehouse_df), ("Shopify", shopify_df), ("EBO", ebo_df)]:
             if df is not None:
-                for col in ["Size"]:
+                for col in ["size"]:
                     if col not in df.columns:
                         df[col] = ""
-                agg = df.groupby(["Design No", "Barcode", "Size"], dropna=False)["Closing Qty"].sum().reset_index()
-                agg.rename(columns={"Closing Qty": f"{label}_Qty"}, inplace=True)
+                agg = df.groupby(["designno", "barcode", "size"], dropna=False)["closingqty"].sum().reset_index()
+                agg.rename(columns={"closingqty": f"{label}_Qty"}, inplace=True)
                 dfs.append(agg)
-        # Merge all sources
-        merged = dfs
+        merged = dfs[0]
         for other in dfs[1:]:
-            merged = merged.merge(other, on=["Design No", "Barcode", "Size"], how="outer")
+            merged = merged.merge(other, on=["designno", "barcode", "size"], how="outer")
         for col in ["Warehouse_Qty", "Shopify_Qty", "EBO_Qty"]:
             if col not in merged.columns:
                 merged[col] = 0
@@ -136,13 +149,10 @@ with tab1:
         qty_cols = [c for c in merged.columns if c.endswith("_Qty")]
         merged["Total_QTY"] = merged[qty_cols].sum(axis=1)
 
-        # ---- Image Lookup ----
-        # Prepare file lookup from Google Drive
         photo_urls = []
-        designs = merged["Design No"].astype(str).tolist()
+        designs = merged["designno"].astype(str).tolist()
         if DRIVE_FOLDER_ID:
             service = build("drive", "v3", credentials=creds)
-            drive_files = {}
             for design in designs:
                 query = f"'{DRIVE_FOLDER_ID}' in parents and trashed=false"
                 resp = service.files().list(q=query, fields="files(id, name)", pageSize=1000).execute()
@@ -150,12 +160,11 @@ with tab1:
                 found = False
                 for file in files:
                     name_score = fuzz.WRatio(design, file["name"])
-                    if name_score >= 90:  # strict match
+                    if name_score >= 90:
                         photo_urls.append(f"https://drive.google.com/uc?export=view&id={file['id']}")
                         found = True
                         break
                 if not found:
-                    # Fallback: look for name containing design number
                     for file in files:
                         if str(design) in file["name"]:
                             photo_urls.append(f"https://drive.google.com/uc?export=view&id={file['id']}")
@@ -166,9 +175,8 @@ with tab1:
         else:
             photo_urls = [None for _ in designs]
 
-        # Fallback to Shopify CDN if missing
         if shopify_df is not None:
-            barcode_to_cdn = dict(zip(shopify_df["Barcode"], shopify_df["CDN link"]))
+            barcode_to_cdn = dict(zip(shopify_df["barcode"], shopify_df["cdnlink"]))
         else:
             barcode_to_cdn = {}
 
@@ -176,13 +184,13 @@ with tab1:
         for idx, row in merged.iterrows():
             img_url = photo_urls[idx] if photo_urls and photo_urls[idx] else None
             if not img_url and shopify_df is not None:
-                bc = str(row["Barcode"])
+                bc = str(row["barcode"])
                 img_url = barcode_to_cdn.get(bc, None)
             display_rows.append({
                 "PHOTO": img_url,
-                "DESIGN NO": str(row["Design No"]),
-                "BARCODE": str(row["Barcode"]),
-                "SIZE": str(row["Size"]),
+                "DESIGN NO": str(row["designno"]),
+                "BARCODE": str(row["barcode"]),
+                "SIZE": str(row["size"]),
                 "WAREHOUSE QTY": int(row["Warehouse_Qty"]),
                 "SHOPIFY QTY": int(row["Shopify_Qty"]),
                 "EBO QTY": int(row["EBO_Qty"]),
@@ -195,15 +203,15 @@ with tab1:
         for i, row in final_df.iterrows():
             cols = st.columns([1,2,2,1,2,2,2])
             if row["PHOTO"]:
-                cols.image(row["PHOTO"], width=60)
+                cols[0].image(row["PHOTO"], width=60)
             else:
-                cols.empty()
+                cols[0].empty()
             cols[1].write(row["DESIGN NO"])
-            cols.write(row["BARCODE"])
-            cols.write(row["SIZE"])
-            cols.write(row["WAREHOUSE QTY"])
-            cols.write(row["SHOPIFY QTY"])
-            cols.write(row["EBO QTY"])
+            cols[2].write(row["BARCODE"])
+            cols[3].write(row["SIZE"])
+            cols[4].write(row["WAREHOUSE QTY"])
+            cols[5].write(row["SHOPIFY QTY"])
+            cols[6].write(row["EBO QTY"])
 
         st.subheader("Top 20 Designs by Inventory")
         top20 = final_df.head(20)
@@ -224,25 +232,24 @@ with tab2:
         for label, df in [("Warehouse", warehouse_df), ("Shopify", shopify_df), ("EBO", ebo_df)]:
             qty = 0
             if df is not None:
-                if "Barcode" in df.columns and query in df["Barcode"].values:
-                    qty = df[df["Barcode"] == query]["Closing Qty"].sum()
+                if "barcode" in df.columns and query in df["barcode"].values:
+                    qty = df[df["barcode"] == query]["closingqty"].sum()
                 else:
-                    match, score = fuzzy_best_match(query, df["Design No"].unique())
+                    match, score = fuzzy_best_match(query, df["designno"].unique())
                     if match:
-                        qty = df[df["Design No"] == match]["Closing Qty"].sum()
+                        qty = df[df["designno"] == match]["closingqty"].sum()
             results.append({"Source": label, "Qty": int(qty)})
         total = sum(r["Qty"] for r in results)
         results.append({"Source": "Total", "Qty": total})
         st.table(pd.DataFrame(results))
-        # Show CDN image
         cdn = None
         if shopify_df is not None:
-            if "Barcode" in shopify_df.columns and query in shopify_df["Barcode"].values:
-                cdn = shopify_df.loc[shopify_df["Barcode"] == query, "CDN link"].iloc
+            if "barcode" in shopify_df.columns and query in shopify_df["barcode"].values:
+                cdn = shopify_df.loc[shopify_df["barcode"] == query, "cdnlink"].iloc[0]
             else:
-                match, _ = fuzzy_best_match(query, shopify_df["Design No"].unique())
+                match, _ = fuzzy_best_match(query, shopify_df["designno"].unique())
                 if match:
-                    cdn = shopify_df.loc[shopify_df["Design No"] == match, "CDN link"].iloc
+                    cdn = shopify_df.loc[shopify_df["designno"] == match, "cdnlink"].iloc[0]
         if cdn:
             st.image(cdn, caption=f"Design {query}")
         else:
@@ -273,20 +280,20 @@ with tab4:
     elif warehouse_df is None and ebo_df is None:
         st.warning("Warehouse/EBO sheets missing.")
     else:
-        shopify_designs = set(shopify_df["Design No"].astype(str).tolist())
-        shopify_barcodes = set(shopify_df["Barcode"].astype(str).tolist())
+        shopify_designs = set(shopify_df["designno"].astype(str).tolist())
+        shopify_barcodes = set(shopify_df["barcode"].astype(str).tolist())
         external_df_list = []
         if warehouse_df is not None:
-            external_df_list.append(warehouse_df[["Design No", "Barcode", "Closing Qty"]])
+            external_df_list.append(warehouse_df[["designno", "barcode", "closingqty"]])
         if ebo_df is not None:
-            external_df_list.append(ebo_df[["Design No", "Barcode", "Closing Qty"]])
+            external_df_list.append(ebo_df[["designno", "barcode", "closingqty"]])
         external_df = pd.concat(external_df_list, ignore_index=True).drop_duplicates()
         listed = []
         nonlisted = []
         for _, row in external_df.iterrows():
-            d = str(row.get("Design No", ""))
-            b = str(row.get("Barcode", ""))
-            closing_qty = row.get("Closing Qty", 0)
+            d = str(row.get("designno", ""))
+            b = str(row.get("barcode", ""))
+            closing_qty = row.get("closingqty", 0)
             if (d in shopify_designs) or (b in shopify_barcodes):
                 listed.append({
                     "Design No": d,
@@ -297,7 +304,7 @@ with tab4:
             else:
                 match_data = process.extractOne(d, shopify_designs)
                 if match_data:
-                    match, score = match_data, match_data[1]
+                    match, score = match_data[0], match_data[1]
                     if score >= 80:
                         listed.append({
                             "Design No": d,
@@ -335,14 +342,14 @@ with tab4:
             st.success("No products pending photoshoot.")
 
 # ---- Image Availability Tab ----
-tab5 = st.tabs(["📷 Image Availability"])
+tab5 = st.tabs(["📷 Image Availability"])[0]
 with tab5:
     st.header("📷 Check Image Availability from Google Drive")
     if warehouse_df is None or warehouse_df.empty or not DRIVE_FOLDER_ID:
         st.warning("Warehouse sheet/Drive folder missing.")
     else:
         service = build("drive", "v3", credentials=creds)
-        designs = warehouse_df["Design No"].dropna().astype(str).unique()
+        designs = warehouse_df["designno"].dropna().astype(str).unique()
         image_data = []
         for design in designs:
             query = f"'{DRIVE_FOLDER_ID}' in parents and name contains '{design}' and trashed=false"
@@ -350,7 +357,7 @@ with tab5:
                 response = service.files().list(q=query, pageSize=1, fields="files(id, name)").execute()
                 files = response.get("files", [])
                 if files:
-                    file_id = files["id"]
+                    file_id = files[0]["id"]
                     url = f"https://drive.google.com/uc?export=view&id={file_id}"
                     status = "✅ Available"
                 else:
