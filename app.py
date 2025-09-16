@@ -37,16 +37,30 @@ def fetch_sheet_df(sheet_name, req_cols=None, label=""):
     if len(data) < 2:
         st.error(f"Sheet '{sheet_name}' is empty or missing header/data.")
         return None
-    df = pd.DataFrame(data[1:], columns=data)
-    def normalize_col(col):
-        return str(col).strip().lower().replace(' ', '')
-    df.columns = [normalize_col(col) for col in df.columns]
+
+    # Print raw columns to debug unmatched columns
+    st.write(f"Raw columns from sheet '{sheet_name}':", data[0])
+
+    # Aggressive cleaning to only alphanumeric lowercase column keys
+    def clean_column(col):
+        return ''.join(c for c in str(col).strip().lower() if c.isalnum())
+
+    norm_cols = [clean_column(col) for col in data[0]]
+    st.write(f"Normalized columns from sheet '{sheet_name}':", norm_cols)
+
+    df = pd.DataFrame(data[1:], columns=norm_cols)
+
     if req_cols:
-        req_cols_norm = [normalize_col(c) for c in req_cols]
-        missing = [c for c in req_cols_norm if c not in df.columns]
+        req_cols_norm = [clean_column(c) for c in req_cols]
+        missing = [c for c in req_cols_norm if c not in norm_cols]
         if missing:
             st.error(f"{label} is missing required columns: {missing}")
             return None
+
+    # Rename normalized columns for consistent access in code
+    # Dataframe columns are already normalized by clean_column
+
+    # Cast types using normalized column names
     if "designno" in df.columns:
         df["designno"] = df["designno"].astype(str)
     if "barcode" in df.columns:
@@ -57,27 +71,25 @@ def fetch_sheet_df(sheet_name, req_cols=None, label=""):
         df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce").fillna(0).astype(int)
     if "createdat" in df.columns:
         df["createdat"] = pd.to_datetime(df["createdat"], errors="coerce")
+
     return df
 
 @st.cache_data(show_spinner="Loading Drive images metadata...")
 def get_drive_images(DRIVE_FOLDER_ID):
     creds = Credentials.from_service_account_info(SERVICE_ACCOUNT_INFO, scopes=SCOPES)
     service = build("drive", "v3", credentials=creds, cache_discovery=False)
-    # Only call files().list once!
     query = f"'{DRIVE_FOLDER_ID}' in parents and trashed=false"
     resp = service.files().list(q=query, fields="files(id,name)", pageSize=1000).execute()
     files = resp.get("files", [])
     return {f["name"]: f["id"] for f in files}
 
 def fuzzy_drive_photo(design, files_dict):
-    # Fast fuzzy lookup among all image names
     if not files_dict:
         return None
     matches = process.extract(design, files_dict.keys(), scorer=fuzz.WRatio, limit=1)
-    if matches and matches[1] >= 90:
-        file_id = files_dict[matches]
+    if matches and matches[0][1] >= 90:
+        file_id = files_dict[matches[0][0]]
         return f"https://drive.google.com/uc?export=view&id={file_id}"
-    # Fallback: substring match
     for fname in files_dict:
         if design in fname:
             return f"https://drive.google.com/uc?export=view&id={files_dict[fname]}"
@@ -88,9 +100,10 @@ def fuzzy_best_match(query, choices):
         return None, 0
     match = process.extractOne(query, choices, scorer=fuzz.WRatio)
     if match:
-        return match, match[1]
+        return match[0], match[1]
     return None, 0
 
+# Required columns - original names
 REQ_SHOPIFY = ["Barcode", "Design No", "Closing Qty", "CDN link"]
 REQ_WAREHOUSE = ["Barcode", "Design No", "Closing Qty"]
 REQ_EBO = ["Barcode", "Design No", "Closing Qty"]
@@ -147,7 +160,7 @@ with tab1:
                 agg = df.groupby(["designno", "barcode", "size"], dropna=False)["closingqty"].sum().reset_index()
                 agg.rename(columns={"closingqty": f"{label}_Qty"}, inplace=True)
                 dfs.append(agg)
-        merged = dfs
+        merged = dfs[0]
         for other in dfs[1:]:
             merged = merged.merge(other, on=["designno", "barcode", "size"], how="outer")
         for col in ["Warehouse_Qty", "Shopify_Qty", "EBO_Qty"]:
@@ -157,7 +170,6 @@ with tab1:
         qty_cols = [c for c in merged.columns if c.endswith("_Qty")]
         merged["Total_QTY"] = merged[qty_cols].sum(axis=1)
 
-        # Load once!
         drive_files = get_drive_images(DRIVE_FOLDER_ID) if DRIVE_FOLDER_ID else {}
 
         if shopify_df is not None:
@@ -188,9 +200,9 @@ with tab1:
         for i, row in final_df.iterrows():
             cols = st.columns([1,2,2,1,2,2,2])
             if row["PHOTO"]:
-                cols.image(row["PHOTO"], width=60)
+                cols[0].image(row["PHOTO"], width=60)
             else:
-                cols.empty()
+                cols[0].empty()
             cols[1].write(row["DESIGN NO"])
             cols[2].write(row["BARCODE"])
             cols[3].write(row["SIZE"])
@@ -229,11 +241,11 @@ with tab2:
         cdn = None
         if shopify_df is not None:
             if "barcode" in shopify_df.columns and query in shopify_df["barcode"].values:
-                cdn = shopify_df.loc[shopify_df["barcode"] == query, "cdnlink"].iloc
+                cdn = shopify_df.loc[shopify_df["barcode"] == query, "cdnlink"].iloc[0]
             else:
                 match, _ = fuzzy_best_match(query, shopify_df["designno"].unique())
                 if match:
-                    cdn = shopify_df.loc[shopify_df["designno"] == match, "cdnlink"].iloc
+                    cdn = shopify_df.loc[shopify_df["designno"] == match, "cdnlink"].iloc[0]
         if cdn:
             st.image(cdn, caption=f"Design {query}")
         else:
@@ -286,7 +298,7 @@ with tab4:
             else:
                 match_data = process.extractOne(d, shopify_designs)
                 if match_data:
-                    match, score = match_data, match_data[1]
+                    match, score = match_data[0], match_data[1]
                     if score >= 80:
                         listed.append({
                             "Design No": d,
