@@ -38,9 +38,9 @@ def fetch_sheet_df(sheet_name, req_cols=None, label=""):
         st.error(f"Sheet '{sheet_name}' is empty or missing header/data.")
         return None
 
-    # Aggressive column normalization
     def clean_column(col):
         return ''.join(c for c in str(col).strip().lower() if c.isalnum())
+
     norm_cols = [clean_column(col) for col in data[0]]
     df = pd.DataFrame(data[1:], columns=norm_cols)
 
@@ -51,7 +51,6 @@ def fetch_sheet_df(sheet_name, req_cols=None, label=""):
             st.error(f"{label} is missing required columns: {missing}")
             return None
 
-    # Cast types using normalized column names
     if "designno" in df.columns:
         df["designno"] = df["designno"].astype(str)
     if "barcode" in df.columns:
@@ -94,7 +93,6 @@ def fuzzy_best_match(query, choices):
         return match[0], match[1]
     return None, 0
 
-# Required columns - original names
 REQ_SHOPIFY = ["Barcode", "Design No", "Closing Qty", "CDN link"]
 REQ_WAREHOUSE = ["Barcode", "Design No", "Closing Qty"]
 REQ_EBO = ["Barcode", "Design No", "Closing Qty"]
@@ -190,7 +188,7 @@ with tab1:
         st.write("### Inventory Table (by Design/Barcode/Size)")
         for i, row in final_df.iterrows():
             cols = st.columns([1,2,2,1,2,2,2])
-            if row["PHOTO"]:
+            if row["PHOTO"] and isinstance(row["PHOTO"], str) and row["PHOTO"].strip():
                 cols[0].image(row["PHOTO"], width=60)
             else:
                 cols[0].empty()
@@ -237,7 +235,7 @@ with tab2:
                 match, _ = fuzzy_best_match(query, shopify_df["designno"].unique())
                 if match:
                     cdn = shopify_df.loc[shopify_df["designno"] == match, "cdnlink"].iloc[0]
-        if cdn:
+        if cdn and isinstance(cdn, str) and cdn.strip():
             st.image(cdn, caption=f"Design {query}")
         else:
             st.warning("No CDN link found in Shopify for this design.")
