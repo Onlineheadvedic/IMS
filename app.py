@@ -38,16 +38,10 @@ def fetch_sheet_df(sheet_name, req_cols=None, label=""):
         st.error(f"Sheet '{sheet_name}' is empty or missing header/data.")
         return None
 
-    # Print raw columns to debug unmatched columns
-    st.write(f"Raw columns from sheet '{sheet_name}':", data[0])
-
-    # Aggressive cleaning to only alphanumeric lowercase column keys
+    # Aggressive column normalization
     def clean_column(col):
         return ''.join(c for c in str(col).strip().lower() if c.isalnum())
-
     norm_cols = [clean_column(col) for col in data[0]]
-    st.write(f"Normalized columns from sheet '{sheet_name}':", norm_cols)
-
     df = pd.DataFrame(data[1:], columns=norm_cols)
 
     if req_cols:
@@ -56,9 +50,6 @@ def fetch_sheet_df(sheet_name, req_cols=None, label=""):
         if missing:
             st.error(f"{label} is missing required columns: {missing}")
             return None
-
-    # Rename normalized columns for consistent access in code
-    # Dataframe columns are already normalized by clean_column
 
     # Cast types using normalized column names
     if "designno" in df.columns:
