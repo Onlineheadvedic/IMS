@@ -13,6 +13,7 @@ st.set_page_config(page_title="Inventory Dashboard", layout="wide")
 SERVICE_ACCOUNT_INFO = st.secrets["service_account"]
 SPREADSHEET_ID = st.secrets["spreadsheet_id"]
 DRIVE_FOLDER_ID = st.secrets.get("drive_folder_id")
+
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
@@ -30,11 +31,10 @@ def fetch_sheet_df(sheet_name, req_cols=None, label=""):
     except Exception as e:
         st.error(f"Error fetching '{sheet_name}': {e}")
         return None
-
     if len(data) < 2:
         st.error(f"Sheet '{sheet_name}' is empty or missing header/data.")
         return None
-    df = pd.DataFrame(data[1:], columns=data[0])
+    df = pd.DataFrame(data[1:], columns=data)
     df.columns = df.columns.str.strip()
     if req_cols:
         missing = [c for c in req_cols if c not in df.columns]
@@ -57,7 +57,7 @@ def fuzzy_best_match(query, choices):
         return None, 0
     match = process.extractOne(query, choices, scorer=fuzz.WRatio)
     if match:
-        return match[0], match[1]
+        return match, match[1]
     return None, 0
 
 # ---- Required Sheets ----
@@ -79,7 +79,6 @@ wh_total = warehouse_df["Closing Qty"].sum() if warehouse_df is not None else 0
 ebo_total = ebo_df["Closing Qty"].sum() if ebo_df is not None else 0
 shop_total = shopify_df["Closing Qty"].sum() if shopify_df is not None else 0
 overall_total = wh_total + ebo_total + shop_total
-
 col1, col2, col3, col4, col5, col6 = st.columns(6)
 col1.metric("Warehouse Qty", wh_total)
 col2.metric("EBO Qty", ebo_total)
@@ -112,40 +111,119 @@ tab1, tab2, tab3, tab4 = st.tabs([
 
 # ---- Inventory Overview Tab ----
 with tab1:
-    if shopify_df is not None or warehouse_df is not None or ebo_df is not None:
-        st.subheader("Inventory Overview")
-        combined = []
+    st.subheader("Inventory Overview")
+    # Only proceed if at least one source is present
+    if warehouse_df is not None or shopify_df is not None or ebo_df is not None:
+        # Build unified inventory table per Design No / Barcode / Size
+        dfs = []
         for label, df in [("Warehouse", warehouse_df), ("Shopify", shopify_df), ("EBO", ebo_df)]:
             if df is not None:
-                # Include missing columns if not found
-                for col in ["Color", "Size"]:
+                for col in ["Size"]:
                     if col not in df.columns:
                         df[col] = ""
-                agg = df.groupby(["Design No", "Barcode", "Color", "Size"], dropna=False)["Closing Qty"].sum().reset_index()
+                agg = df.groupby(["Design No", "Barcode", "Size"], dropna=False)["Closing Qty"].sum().reset_index()
                 agg.rename(columns={"Closing Qty": f"{label}_Qty"}, inplace=True)
-                combined.append(agg)
-        if combined:
-            merged = combined[0]
-            for part in combined[1:]:
-                merged = merged.merge(part, on=["Design No", "Barcode", "Color", "Size"], how="outer")
-            merged = merged.fillna(0)
-            qty_cols = [c for c in merged.columns if c.endswith("_Qty")]
-            merged["Total_QTY"] = merged[qty_cols].sum(axis=1)
-            st.dataframe(
-                merged[["Design No", "Barcode", "Color", "Size"] + qty_cols + ["Total_QTY"]]
-                .sort_values("Total_QTY", ascending=False)
-                .head(50)
-            )
-            # Top 20 Designs by Inventory
-            st.subheader("Top 20 Designs by Inventory")
-            top20 = merged.sort_values("Total_QTY", ascending=False).head(20)
-            fig, ax = plt.subplots(figsize=(10,5))
-            ax.bar(top20["Design No"], top20["Total_QTY"], color="skyblue")
-            ax.set_xlabel("Design No")
-            ax.set_ylabel("Total Inventory")
-            ax.set_title("Top 20 Designs by Inventory")
-            plt.xticks(rotation=45, ha="right")
-            st.pyplot(fig)
+                dfs.append(agg)
+        # Merge all sources
+        merged = dfs
+        for other in dfs[1:]:
+            merged = merged.merge(other, on=["Design No", "Barcode", "Size"], how="outer")
+        for col in ["Warehouse_Qty", "Shopify_Qty", "EBO_Qty"]:
+            if col not in merged.columns:
+                merged[col] = 0
+        merged = merged.fillna(0)
+        qty_cols = [c for c in merged.columns if c.endswith("_Qty")]
+        merged["Total_QTY"] = merged[qty_cols].sum(axis=1)
+
+        # ---- Image Lookup ----
+        # Prepare file lookup from Google Drive
+        photo_urls = []
+        designs = merged["Design No"].astype(str).tolist()
+        if DRIVE_FOLDER_ID:
+            service = build("drive", "v3", credentials=creds)
+            drive_files = {}
+            for design in designs:
+                # Use fuzzy matching
+                query = f"'{DRIVE_FOLDER_ID}' in parents and trashed=false"
+                resp = service.files().list(q=query, fields="files(id, name)", pageSize=1000).execute()
+                files = resp.get("files", [])
+                found = False
+                for file in files:
+                    name_score = fuzz.WRatio(design, file["name"])
+                    if name_score >= 90:  # strict match
+                        photo_urls.append(f"https://drive.google.com/uc?export=view&id={file['id']}")
+                        found = True
+                        break
+                if not found:
+                    # Fallback: look for name containing design number
+                    for file in files:
+                        if str(design) in file["name"]:
+                            photo_urls.append(f"https://drive.google.com/uc?export=view&id={file['id']}")
+                            found = True
+                            break
+                if not found:
+                    photo_urls.append(None)
+        else:
+            photo_urls = [None for _ in designs]
+
+        # Fallback to Shopify CDN if missing
+        if shopify_df is not None:
+            barcode_to_cdn = dict(zip(shopify_df["Barcode"], shopify_df["CDN link"]))
+        else:
+            barcode_to_cdn = {}
+
+        display_rows = []
+        for idx, row in merged.iterrows():
+            img_url = photo_urls[idx] if photo_urls and photo_urls[idx] else None
+            if not img_url and shopify_df is not None:
+                # Try to match by barcode to CDN link
+                bc = str(row["Barcode"])
+                img_url = barcode_to_cdn.get(bc, None)
+            # Compose display row
+            display_rows.append({
+                "PHOTO": img_url,
+                "DESIGN NO": str(row["Design No"]),
+                "BARCODE": str(row["Barcode"]),
+                "SIZE": str(row["Size"]),
+                "WAREHOUSE QTY": int(row["Warehouse_Qty"]),
+                "SHOPIFY QTY": int(row["Shopify_Qty"]),
+                "EBO QTY": int(row["EBO_Qty"]),
+                "TOTAL QTY": int(row["Total_QTY"]),
+            })
+
+        # Sort by Total Qty
+        display_rows_sorted = sorted(display_rows, key=lambda x: -x["TOTAL QTY"])
+        final_df = pd.DataFrame(display_rows_sorted)
+        st.write("### Inventory Table (by Design/Barcode/Size)")
+        def custom_photo(x):
+            if x:
+                st.image(x, width=50)
+            else:
+                st.text("No Image")
+        # Streamlit can't use df.style for images, so render per row
+        for i, row in final_df.iterrows():
+            cols = st.columns([1,2,2,1,2,2,2])
+            if row["PHOTO"]:
+                cols.image(row["PHOTO"], width=60)
+            else:
+                cols.empty()
+            cols[1].write(row["DESIGN NO"])
+            cols.write(row["BARCODE"])
+            cols.write(row["SIZE"])
+            cols.write(row["WAREHOUSE QTY"])
+            cols.write(row["SHOPIFY QTY"])
+            cols.write(row["EBO QTY"])
+
+        # Top 20 Designs by Inventory
+        st.subheader("Top 20 Designs by Inventory")
+        top20 = final_df.head(20)
+        fig, ax = plt.subplots(figsize=(10,5))
+        ax.bar(top20["DESIGN NO"], top20["TOTAL QTY"], color="skyblue")
+        ax.set_xlabel("Design No")
+        ax.set_ylabel("Total Inventory")
+        ax.set_title("Top 20 Designs by Inventory")
+        plt.xticks(rotation=45, ha="right")
+        st.pyplot(fig)
 
 # ---- Search Tab ----
 with tab2:
@@ -170,11 +248,11 @@ with tab2:
         cdn = None
         if shopify_df is not None:
             if "Barcode" in shopify_df.columns and query in shopify_df["Barcode"].values:
-                cdn = shopify_df.loc[shopify_df["Barcode"] == query, "CDN link"].iloc[0]
+                cdn = shopify_df.loc[shopify_df["Barcode"] == query, "CDN link"].iloc
             else:
                 match, _ = fuzzy_best_match(query, shopify_df["Design No"].unique())
                 if match:
-                    cdn = shopify_df.loc[shopify_df["Design No"] == match, "CDN link"].iloc[0]
+                    cdn = shopify_df.loc[shopify_df["Design No"] == match, "CDN link"].iloc
         if cdn:
             st.image(cdn, caption=f"Design {query}")
         else:
@@ -229,7 +307,7 @@ with tab4:
             else:
                 match_data = process.extractOne(d, shopify_designs)
                 if match_data:
-                    match, score = match_data[0], match_data[1]
+                    match, score = match_data, match_data[1]
                     if score >= 80:
                         listed.append({
                             "Design No": d,
@@ -267,7 +345,7 @@ with tab4:
             st.success("No products pending photoshoot.")
 
 # ---- Image Availability Tab ----
-tab5 = st.tabs(["📷 Image Availability"])[0]
+tab5 = st.tabs(["📷 Image Availability"])
 with tab5:
     st.header("📷 Check Image Availability from Google Drive")
     if warehouse_df is None or warehouse_df.empty or not DRIVE_FOLDER_ID:
@@ -282,7 +360,7 @@ with tab5:
                 response = service.files().list(q=query, pageSize=1, fields="files(id, name)").execute()
                 files = response.get("files", [])
                 if files:
-                    file_id = files[0]["id"]
+                    file_id = files["id"]
                     url = f"https://drive.google.com/uc?export=view&id={file_id}"
                     status = "✅ Available"
                 else:
