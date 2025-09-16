@@ -35,7 +35,8 @@ def fetch_sheet_df(sheet_name, req_cols=None, label=""):
         st.error(f"Sheet '{sheet_name}' is empty or missing header/data.")
         return None
     df = pd.DataFrame(data[1:], columns=data)
-    df.columns = df.columns.str.strip()
+    # STRIP COLUMN NAMES ROBUSTLY - FIXED
+    df.columns = [str(col).strip() for col in df.columns]
     if req_cols:
         missing = [c for c in req_cols if c not in df.columns]
         if missing:
@@ -143,7 +144,6 @@ with tab1:
             service = build("drive", "v3", credentials=creds)
             drive_files = {}
             for design in designs:
-                # Use fuzzy matching
                 query = f"'{DRIVE_FOLDER_ID}' in parents and trashed=false"
                 resp = service.files().list(q=query, fields="files(id, name)", pageSize=1000).execute()
                 files = resp.get("files", [])
@@ -176,10 +176,8 @@ with tab1:
         for idx, row in merged.iterrows():
             img_url = photo_urls[idx] if photo_urls and photo_urls[idx] else None
             if not img_url and shopify_df is not None:
-                # Try to match by barcode to CDN link
                 bc = str(row["Barcode"])
                 img_url = barcode_to_cdn.get(bc, None)
-            # Compose display row
             display_rows.append({
                 "PHOTO": img_url,
                 "DESIGN NO": str(row["Design No"]),
@@ -191,16 +189,9 @@ with tab1:
                 "TOTAL QTY": int(row["Total_QTY"]),
             })
 
-        # Sort by Total Qty
         display_rows_sorted = sorted(display_rows, key=lambda x: -x["TOTAL QTY"])
         final_df = pd.DataFrame(display_rows_sorted)
         st.write("### Inventory Table (by Design/Barcode/Size)")
-        def custom_photo(x):
-            if x:
-                st.image(x, width=50)
-            else:
-                st.text("No Image")
-        # Streamlit can't use df.style for images, so render per row
         for i, row in final_df.iterrows():
             cols = st.columns([1,2,2,1,2,2,2])
             if row["PHOTO"]:
@@ -214,7 +205,6 @@ with tab1:
             cols.write(row["SHOPIFY QTY"])
             cols.write(row["EBO QTY"])
 
-        # Top 20 Designs by Inventory
         st.subheader("Top 20 Designs by Inventory")
         top20 = final_df.head(20)
         fig, ax = plt.subplots(figsize=(10,5))
@@ -373,7 +363,6 @@ with tab5:
         availability_df = pd.DataFrame(image_data)
         st.write("### Image Availability Status")
         st.dataframe(availability_df)
-        # Optionally show missing images only
         missing = availability_df[availability_df["Image Status"] == "❌ Not Available"]
         if not missing.empty:
             st.warning("Missing images for these designs:")
